@@ -1,0 +1,95 @@
+import http from 'node:http';
+import { chromium } from 'playwright';
+import pdf from './pdf-lib.min.js';
+import { readFileSync } from 'node:fs';
+const home = readFileSync(new URL('./converter.html',import.meta.url));
+const allowed = url => {
+  try {
+    const u = new URL(url);
+    return u.protocol === 'https:' && !u.username && !u.password && !u.port &&
+      ['canva.com','www.canva.com'].includes(u.hostname) && /^\/design\/[\w-]+(?:\/[\w-]+)?\/view\/?$/.test(u.pathname);
+  } catch { return false; }
+};
+async function convert(link, browser) {
+  const context = await browser.newContext({viewport:{width:1440,height:900},locale:'en-US',serviceWorkers:'block',acceptDownloads:false});
+  await context.route('**/*',route=>{
+    const u = new URL(route.request().url());
+    const trusted = ['canva.com','canva-static.com','canva-apps.com','canva.cn'].some(d=>u.hostname===d||u.hostname.endsWith('.'+d));
+    return u.protocol==='https:' && !u.port && trusted ? route.continue() : route.abort();
+  });
+  const page=await context.newPage();
+  const url=new URL(link); url.hash='';
+  await page.goto(url.href,{waitUntil:'domcontentloaded',timeout:45000});
+  const counter=page.getByRole('button',{name:'Go to page',exact:true});
+  await counter.waitFor({timeout:18000});
+  for(const name of ['Reject all','Decline all','Only necessary cookies']){
+    const b=page.getByRole('button',{name,exact:true});
+    if(await b.isVisible()) {await b.click();break;}
+  }
+  const readCounter=async()=>{
+    const pair=(await counter.innerText()).trim().match(/^(\d+)\s*\/\s*(\d+)$/);
+    if(!pair) throw Error('Không đọc được số trang từ Canva.');
+    return pair.slice(1).map(Number);
+  };
+  const [first,total]=await readCounter();
+  if(!Number.isSafeInteger(total)||total<1||total>150||first<1||first>total)throw Error('Bản này hỗ trợ trình chiếu từ 1 đến 150 trang.');
+  const move=async(expected,direction)=>{
+    await page.getByRole('button',{name:direction+' page',exact:true}).click({timeout:6000});
+    await page.waitForFunction(({expected,total})=>document.querySelector('button[aria-label="Go to page"]')?.textContent.replace(/\s+/g,'')===expected+'/'+total,{expected,total},{timeout:10000});
+  };
+  for(let n=first-1;n>=1;n--)await move(n,'Previous');
+  const doc=await pdf.PDFDocument.create();
+  await page.mouse.move(0,0);
+  for(let n=1;n<=total;n++){
+    if(n>1) await move(n,'Next');
+    await page.mouse.move(0,0);
+    await page.waitForTimeout(1600);
+    await page.evaluate(()=>document.fonts.ready.then(()=>true));
+    const clip=await page.evaluate(()=>{
+      const w=innerWidth,h=innerHeight;
+      let el=document.elementFromPoint(w/2,h/2), rect=null;
+      while(el){
+        const r=el.getBoundingClientRect();
+        if(r.width>w*.32&&r.height>h*.32&&r.x>=-1&&r.y>=-1&&r.right<=w+1&&r.bottom<=h+1&&(r.width<w-4||r.height<h-4)&&Math.abs(r.x+r.width/2-w/2)<10&&Math.abs(r.y+r.height/2-h/2)<15)rect={x:Math.max(0,r.x),y:Math.max(0,r.y),width:r.width,height:r.height};
+        el=el.parentElement;
+      }
+      return rect;
+    });
+    if(!clip)throw Error('Không xác định được vùng slide ở trang '+n+'.');
+    const [current,count]=await readCounter();
+    if(current!==n||count!==total)throw Error('Bộ đếm trang thay đổi trong khi quét.');
+    const image=await doc.embedJpg(await page.screenshot({type:'jpeg',quality:90,clip,timeout:12000}));
+    const sheet=doc.addPage([image.width*.75,image.height*.75]);
+    sheet.drawImage(image,{width:sheet.getWidth(),height:sheet.getHeight()});
+  }
+  return Buffer.from(await doc.save());
+}
+let busy=false;
+http.createServer(async(req,res)=>{
+  const fail=(status,msg)=>{if(!res.destroyed)res.writeHead(status,{'Content-Type':'text/plain; charset=utf-8'}).end(msg)};
+  if(req.method==='GET'&&req.url==='/')return res.writeHead(200,{'Content-Type':'text/html; charset=utf-8'}).end(home);
+  if(req.method!=='POST'||req.url!=='/convert')return fail(404,'Không tìm thấy.');
+  if(req.headers['content-type']!=='application/json')return fail(415,'Cần gửi JSON.');
+  if(busy)return fail(429,'Máy chủ đang xử lý một bài khác. Vui lòng thử lại sau.');
+  let body='',link;
+  try{
+    for await(const chunk of req){if(body.length+chunk.length>4096)return fail(413,'Link quá dài.');body+=chunk;}
+    link=JSON.parse(body).link;
+  }catch{return fail(400,'Dữ liệu không hợp lệ.');}
+  if(!allowed(link))return fail(400,'Hãy nhập link xem Canva dạng https://www.canva.com/design/…/view.');
+  if(busy)return fail(429,'Máy chủ đang bận.');
+  busy=true;
+  let browser,aborted=false;
+  const stop=()=>{aborted=true;browser?.close().catch(()=>{});};
+  const timer=setTimeout(stop,8*60*1000);
+  res.once('close',stop);
+  try{
+    browser=await chromium.launch({headless:true,args:['--disable-dev-shm-usage']});
+    if(aborted)return;
+    const bytes=await convert(link,browser);
+    res.writeHead(200,{'Content-Type':'application/pdf','Content-Disposition':'attachment; filename="slide-canva.pdf"','Cache-Control':'no-store'}).end(bytes);
+  }catch(e){
+    const known=/^(Bản này|Không xác định|Không đọc|Bộ đếm)/.test(e.message);
+    fail(422,known?e.message:'Không thể quét đủ trang. Hãy kiểm tra link xem công khai. Canva có thể yêu cầu đăng nhập, chặn trình duyệt máy chủ hoặc tải quá lâu.');
+  }finally{clearTimeout(timer);res.off('close',stop);try{await browser?.close();}finally{busy=false;}}
+}).listen(Number(process.env.PORT)||3000,'0.0.0.0');
