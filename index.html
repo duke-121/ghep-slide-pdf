@@ -8,7 +8,7 @@
 </style>
 <header>Nếp Giấy</header><main><h1>Canva sang PDF</h1><p>Biến các slide trong link xem Canva thành một tệp PDF theo đúng thứ tự.</p>
 <form><label for="url">Link trình chiếu Canva</label><input id="url" type="url" placeholder="https://www.canva.com/design/…/view" required>
-<button>Tạo PDF</button><p id="status" role="status" aria-live="polite"></p><p id="setup" hidden>Chủ website có thể <a href="https://dashboard.render.com/blueprint/new?repo=https://github.com/duke-121/ghep-slide-pdf" target="_blank" rel="noopener noreferrer">mở cấu hình Render Free</a> để triển khai hoặc kiểm tra địa chỉ dịch vụ.</p><a id="file" hidden download="slide-canva.pdf">Tải lại PDF</a></form>
+<button>Tạo PDF</button><p id="status" role="status" aria-live="polite"></p><p id="setup" hidden><a href="https://nep-giay-duke-121.onrender.com/">Mở trực tiếp Nếp Giấy trên Render</a></p><a id="file" hidden download="slide-canva.pdf">Tải lại PDF</a></form>
 </main>
 <script>
 const form=document.querySelector('form'), input=document.querySelector('#url'), button=form.querySelector('button'), report=document.querySelector('#status'), file=document.querySelector('#file');
@@ -30,7 +30,7 @@ form.onsubmit=async event=>{
     file.href=URL.createObjectURL(await response.blob());file.hidden=false;file.click();
     report.textContent='PDF đã sẵn sàng.';
   }catch(error){const offline=error instanceof TypeError;
-    report.textContent=offline?'Trình duyệt chưa liên lạc được với máy chủ quét. Chưa có PDF nào được tạo.':error.message;
+    report.textContent=offline?'Kết nối bị gián đoạn trước khi trình duyệt nhận được PDF.':error.message;
     document.querySelector('#setup').hidden=!(hostedOnPages && offline);}
   finally{button.disabled=false;}
 };
