@@ -1,6 +1,11 @@
 import http from 'node:http';
 import { chromium } from 'playwright';
-import pdf from './pdf-lib.min.js';
+import { SlidePdf } from './slide-pdf.mjs';
+import { mkdtemp, open, rm } from 'node:fs/promises';
+import { createReadStream } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { pipeline } from 'node:stream/promises';
 import { readFileSync } from 'node:fs';
 const home = readFileSync(new URL('./index.html',import.meta.url));
 const allowed = url => {
@@ -10,10 +15,11 @@ const allowed = url => {
       ['canva.com','www.canva.com'].includes(u.hostname) && /^\/design\/[\w-]+(?:\/[\w-]+)?\/view\/?$/.test(u.pathname);
   } catch { return false; }
 };
-async function convert(link, browser) {
-  const context = await browser.newContext({viewport:{width:1440,height:900},locale:'en-US',serviceWorkers:'block',acceptDownloads:false});
+async function convert(link, browser, doc) {
+  const context = await browser.newContext({viewport:{width:1280,height:800},locale:'en-US',serviceWorkers:'block',acceptDownloads:false});
   await context.route('**/*',route=>{
     const u = new URL(route.request().url());
+    if(route.request().resourceType()==='media')return route.abort();
     const trusted = ['canva.com','canva-static.com','canva-apps.com','canva.cn'].some(d=>u.hostname===d||u.hostname.endsWith('.'+d));
     return u.protocol==='https:' && !u.port && trusted ? route.continue() : route.abort();
   });
@@ -38,7 +44,7 @@ async function convert(link, browser) {
     await page.waitForFunction(({expected,total})=>document.querySelector('button[aria-label="Go to page"]')?.textContent.replace(/\s+/g,'')===expected+'/'+total,{expected,total},{timeout:10000});
   };
   for(let n=first-1;n>=1;n--)await move(n,'Previous');
-  const doc=await pdf.PDFDocument.create();
+
   await page.mouse.move(0,0);
   for(let n=1;n<=total;n++){
     if(n>1) await move(n,'Next');
@@ -58,15 +64,15 @@ async function convert(link, browser) {
     if(!clip)throw Error('Không xác định được vùng slide ở trang '+n+'.');
     const [current,count]=await readCounter();
     if(current!==n||count!==total)throw Error('Bộ đếm trang thay đổi trong khi quét.');
-    const image=await doc.embedJpg(await page.screenshot({type:'jpeg',quality:90,clip,timeout:12000}));
-    const sheet=doc.addPage([image.width*.75,image.height*.75]);
-    sheet.drawImage(image,{width:sheet.getWidth(),height:sheet.getHeight()});
+    const capture={x:Math.ceil(clip.x),y:Math.ceil(clip.y),width:Math.floor(clip.width),height:Math.floor(clip.height)};
+    const jpeg=await page.screenshot({type:'jpeg',quality:85,clip:capture,timeout:12000});
+    await doc.add(jpeg,capture.width,capture.height);
   }
-  return Buffer.from(await doc.save());
+  await doc.finish();
 }
 let busy=false;
 http.createServer(async(req,res)=>{
-  const fail=(status,msg)=>{if(!res.destroyed)res.writeHead(status,{'Content-Type':'text/plain; charset=utf-8'}).end(msg)};
+  const fail=(status,msg)=>{if(!res.destroyed && !res.headersSent)res.writeHead(status,{'Content-Type':'text/plain; charset=utf-8'}).end(msg)};
   const origin=req.headers.origin;
   if(origin==='https://duke-121.github.io'){
     res.setHeader('Access-Control-Allow-Origin',origin);
@@ -85,17 +91,25 @@ http.createServer(async(req,res)=>{
   if(!allowed(link))return fail(400,'Hãy nhập link xem Canva dạng https://www.canva.com/design/…/view.');
   if(busy)return fail(429,'Máy chủ đang bận.');
   busy=true;
-  let browser,aborted=false;
+  let browser,dir,handle,aborted=false;
   const stop=()=>{aborted=true;browser?.close().catch(()=>{});};
   const timer=setTimeout(stop,8*60*1000);
   res.once('close',stop);
   try{
-    browser=await chromium.launch({headless:true,args:['--disable-dev-shm-usage']});
-    if(aborted)return;
-    const bytes=await convert(link,browser);
-    res.writeHead(200,{'Content-Type':'application/pdf','Content-Disposition':'attachment; filename="slide-canva.pdf"','Cache-Control':'no-store'}).end(bytes);
+    dir=await mkdtemp(join(tmpdir(),'canva-pdf-'));
+    const path=join(dir,'slides.pdf');
+    handle=await open(path,'wx');
+    browser=await chromium.launch({headless:true,args:['--disable-dev-shm-usage','--renderer-process-limit=2','--disk-cache-size=8388608']});
+    if(aborted)throw new Error('cancelled');
+    await convert(link,browser,new SlidePdf(handle));
+    await browser.close();
+    browser=null;
+    await handle.close();
+    handle=null;
+    res.writeHead(200,{'Content-Type':'application/pdf','Content-Disposition':'attachment; filename="slide-canva.pdf"','Cache-Control':'no-store'});
+    await pipeline(createReadStream(path),res);
   }catch(e){
     const known=/^(Bản này|Không xác định|Không đọc|Bộ đếm)/.test(e.message);
     fail(422,known?e.message:'Không thể quét đủ trang. Hãy kiểm tra link xem công khai. Canva có thể yêu cầu đăng nhập, chặn trình duyệt máy chủ hoặc tải quá lâu.');
-  }finally{clearTimeout(timer);res.off('close',stop);try{await browser?.close();}finally{busy=false;}}
+  }finally{clearTimeout(timer);res.off('close',stop);try{await browser?.close();}finally{try{await handle?.close();}finally{try{if(dir)await rm(dir,{recursive:true,force:true});}finally{busy=false;}}}}
 }).listen(Number(process.env.PORT)||3000,'0.0.0.0');
