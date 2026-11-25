@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: nep-giay-canva-pdf
+    name: nep-giay-duke-121
     runtime: docker
     plan: free
     healthCheckPath: /

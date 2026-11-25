@@ -1,12 +1,8 @@
 import http from 'node:http';
-import { createRequire } from 'node:module';
-import { spawn } from 'node:child_process';
-const require = createRequire(import.meta.url);
-const { chromium } = require('playwright');
-const desktop = process.env.NEP_GIAY_DESKTOP === '1';
+import { chromium } from 'playwright';
 import pdf from './pdf-lib.min.js';
 import { readFileSync } from 'node:fs';
-const home = readFileSync(new URL('./converter.html',import.meta.url));
+const home = readFileSync(new URL('./index.html',import.meta.url));
 const allowed = url => {
   try {
     const u = new URL(url);
@@ -71,7 +67,12 @@ async function convert(link, browser) {
 let busy=false;
 http.createServer(async(req,res)=>{
   const fail=(status,msg)=>{if(!res.destroyed)res.writeHead(status,{'Content-Type':'text/plain; charset=utf-8'}).end(msg)};
-  if(desktop && (req.headers.host !== '127.0.0.1:'+req.socket.localPort || (req.headers.origin && req.headers.origin !== 'http://'+req.headers.host))) return fail(403,'Yêu cầu không hợp lệ.');
+  const origin=req.headers.origin;
+  if(origin==='https://duke-121.github.io'){
+    res.setHeader('Access-Control-Allow-Origin',origin);
+    res.setHeader('Vary','Origin');
+    if(req.method==='OPTIONS' && req.url==='/convert')return res.writeHead(204,{'Access-Control-Allow-Headers':'Content-Type','Access-Control-Allow-Methods':'POST'}).end();
+  }
   if(req.method==='GET'&&req.url==='/')return res.writeHead(200,{'Content-Type':'text/html; charset=utf-8'}).end(home);
   if(req.method!=='POST'||req.url!=='/convert')return fail(404,'Không tìm thấy.');
   if(req.headers['content-type']!=='application/json')return fail(415,'Cần gửi JSON.');
@@ -89,7 +90,7 @@ http.createServer(async(req,res)=>{
   const timer=setTimeout(stop,8*60*1000);
   res.once('close',stop);
   try{
-    browser=await chromium.launch({headless:true,channel:desktop?'msedge':undefined,args:['--disable-dev-shm-usage']});
+    browser=await chromium.launch({headless:true,args:['--disable-dev-shm-usage']});
     if(aborted)return;
     const bytes=await convert(link,browser);
     res.writeHead(200,{'Content-Type':'application/pdf','Content-Disposition':'attachment; filename="slide-canva.pdf"','Cache-Control':'no-store'}).end(bytes);
@@ -97,9 +98,4 @@ http.createServer(async(req,res)=>{
     const known=/^(Bản này|Không xác định|Không đọc|Bộ đếm)/.test(e.message);
     fail(422,known?e.message:'Không thể quét đủ trang. Hãy kiểm tra link xem công khai. Canva có thể yêu cầu đăng nhập, chặn trình duyệt máy chủ hoặc tải quá lâu.');
   }finally{clearTimeout(timer);res.off('close',stop);try{await browser?.close();}finally{busy=false;}}
-}).listen(desktop ? 0 : Number(process.env.PORT)||3000, desktop ? '127.0.0.1' : '0.0.0.0',function(){
-  if(!desktop)return;
-  const address='http://127.0.0.1:'+this.address().port+'/';
-  console.log('Nep Giay: '+address+'\nDong cua so nay de tat ung dung.');
-  if(process.platform==='win32')spawn('explorer.exe',[address],{stdio:'ignore'}).on('error',()=>console.log(address));
-});
+}).listen(Number(process.env.PORT)||3000,'0.0.0.0');
