@@ -8,7 +8,7 @@
 </style>
 <header>Nếp Giấy</header><main><h1>Canva sang PDF</h1><p>Biến các slide trong link xem Canva thành một tệp PDF theo đúng thứ tự.</p>
 <form><label for="url">Link trình chiếu Canva</label><input id="url" type="url" placeholder="https://www.canva.com/design/…/view" required>
-<button>Tạo PDF</button><p id="status" role="status" aria-live="polite"></p><a id="file" hidden download="slide-canva.pdf">Tải lại PDF</a></form>
+<button>Tạo PDF</button><p id="status" role="status" aria-live="polite"></p><p id="setup" hidden>Chủ website có thể <a href="https://dashboard.render.com/blueprint/new?repo=https://github.com/duke-121/ghep-slide-pdf" target="_blank" rel="noopener noreferrer">mở cấu hình Render Free</a> để triển khai hoặc kiểm tra địa chỉ dịch vụ.</p><a id="file" hidden download="slide-canva.pdf">Tải lại PDF</a></form>
 </main>
 <script>
 const form=document.querySelector('form'), input=document.querySelector('#url'), button=form.querySelector('button'), report=document.querySelector('#status'), file=document.querySelector('#file');
@@ -21,6 +21,7 @@ form.onsubmit=async event=>{
   try{link=new URL(input.value.trim());if(!['www.canva.com','canva.com'].includes(link.hostname)||link.protocol!=='https:'||!/^\/design\/[\w-]+(?:\/[\w-]+)?\/view\/?$/.test(link.pathname))throw Error();}
   catch{report.textContent='Hãy dán link xem trình chiếu Canva có phần đuôi /view.';input.focus();return;}
   if(file.hasAttribute('href'))URL.revokeObjectURL(file.href);
+  document.querySelector('#setup').hidden=true;
   file.hidden=true;button.disabled=true;report.textContent='Đang mở Canva và quét các trang. Hãy giữ trang này mở.';
   try {
     const response=await fetch(endpoint,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({link:link.href})});
@@ -28,7 +29,9 @@ form.onsubmit=async event=>{
     if(!response.headers.get('Content-Type')?.startsWith('application/pdf'))throw Error('Bộ quét chưa trả về PDF.');
     file.href=URL.createObjectURL(await response.blob());file.hidden=false;file.click();
     report.textContent='PDF đã sẵn sàng.';
-  }catch(error){report.textContent=error.message==='Failed to fetch'?'Chưa kết nối được bộ quét. Vui lòng thử lại.':error.message;}
+  }catch(error){const offline=error instanceof TypeError;
+    report.textContent=offline?'Trình duyệt chưa liên lạc được với máy chủ quét. Chưa có PDF nào được tạo.':error.message;
+    document.querySelector('#setup').hidden=!(hostedOnPages && offline);}
   finally{button.disabled=false;}
 };
 </script></html>
