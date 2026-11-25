@@ -1,0 +1,9 @@
+{
+  "manifest_version": 3,
+  "name": "Nếp Giấy – Quét slide Canva",
+  "version": "1.0.0",
+  "description": "Bấm trên tab trình chiếu Canva để chuyển từng trang và lưu PDF trên thiết bị.",
+  "permissions": ["activeTab", "scripting"],
+  "action": {"default_title": "Nếp Giấy – Bắt đầu quét / dừng quét"},
+  "background": {"service_worker": "worker.js"}
+}
